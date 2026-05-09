@@ -1,4 +1,4 @@
-#!/Users/zmac/Downloads/wine-deals/venv/bin/python3
+#!/Users/zmac/wine-deals/venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys

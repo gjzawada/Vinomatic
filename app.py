@@ -111,3 +111,76 @@ def get_sources():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5050)
+
+
+# ── Wishlist API ─────────────────────────────────────────────────────────────
+import json, os
+from datetime import datetime
+
+WISHLIST_FILE = os.path.join(os.path.dirname(__file__), "wishlist.json")
+
+def _load_wishlist():
+    if not os.path.exists(WISHLIST_FILE):
+        return []
+    try:
+        with open(WISHLIST_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_wishlist(items):
+    with open(WISHLIST_FILE, "w") as f:
+        json.dump(items, f, indent=2)
+
+@app.route("/api/wishlist", methods=["GET"])
+def get_wishlist():
+    return jsonify({"items": _load_wishlist()})
+
+@app.route("/api/wishlist", methods=["POST"])
+def add_to_wishlist():
+    wine = request.json
+    if not wine:
+        return jsonify({"error": "no data"}), 400
+    items = _load_wishlist()
+    # Avoid duplicates by url+name
+    key = (wine.get("url", "") + wine.get("name", "")).strip()
+    if any((i.get("url","") + i.get("name","")).strip() == key for i in items):
+        return jsonify({"status": "already_saved", "count": len(items)})
+    wine["saved_at"] = datetime.now().isoformat()
+    items.append(wine)
+    _save_wishlist(items)
+    return jsonify({"status": "saved", "count": len(items)})
+
+@app.route("/api/wishlist/<path:item_url>", methods=["DELETE"])
+def remove_from_wishlist(item_url):
+    items = _load_wishlist()
+    items = [i for i in items if i.get("url", "") != item_url]
+    _save_wishlist(items)
+    return jsonify({"status": "removed", "count": len(items)})
+
+@app.route("/api/wishlist/clear", methods=["POST"])
+def clear_wishlist():
+    _save_wishlist([])
+    return jsonify({"status": "cleared"})
+
+
+# ── Debug endpoint ────────────────────────────────────────────────────────────
+@app.route("/api/debug")
+def debug_scrapers():
+    """Hit this from your browser to see exactly what each scraper returns."""
+    import concurrent.futures, traceback
+    results = {}
+    def probe(name, fn):
+        try:
+            wines = fn()
+            return name, {"count": len(wines), "status": "ok",
+                          "sample": wines[0]["name"] if wines else None}
+        except Exception as e:
+            return name, {"count": 0, "status": "error", "error": str(e),
+                          "trace": traceback.format_exc()[-400:]}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(probe, n, f): n for n, f in SCRAPERS.items()}
+        for future in concurrent.futures.as_completed(futures):
+            name, result = future.result()
+            results[name] = result
+    return jsonify(results)
