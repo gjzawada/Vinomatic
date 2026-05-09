@@ -1,119 +1,89 @@
 """
-Scraper for Last Bottle Wines (lastbottle.com)
-Flash-sale site — one deal at a time, but it exposes a simple JSON endpoint.
+Last Bottle Wines - flash sale, one deal at a time.
+Their page is server-rendered and scraper-friendly.
 """
 import logging
-from scrapers import get_page, parse_price, wine_stub
+import re
 from bs4 import BeautifulSoup
+from scrapers import get_page, parse_price, wine_stub, infer_attributes
 
 logger = logging.getLogger(__name__)
+BASE = "https://www.lastbottle.com"
 
 
-def scrape_lastbottle() -> list[dict]:
+def scrape_lastbottle() -> list:
     wines = []
-
-    # Last Bottle shows the current deal on the homepage
-    html = get_page("https://www.lastbottle.com/")
+    html = get_page(BASE + "/", ua_index=0)
     if not html:
+        logger.warning("[Last Bottle] no HTML returned")
         return wines
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
-    try:
-        # Product name
-        name_el = soup.select_one("h1.product-name, .wine-name, h1")
-        name = name_el.get_text(strip=True) if name_el else "Unknown Wine"
+    # Last Bottle renders product data in multiple possible structures
+    # Try JSON-LD first (most reliable)
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            import json
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            if data.get("@type") in ("Product", "Offer"):
+                name = data.get("name", "")
+                price = float(data.get("offers", {}).get("price", 0) or 0) or None
+                image = data.get("image", "")
+                if isinstance(image, list):
+                    image = image[0]
+                desc = data.get("description", "")
+                varietal, wine_type, country, region = infer_attributes(name + " " + desc)
+                if name:
+                    wines.append(wine_stub(
+                        name=name, price=price, original_price=None,
+                        url=BASE, image=image, source="Last Bottle",
+                        varietal=varietal, region=region, country=country,
+                        wine_type=wine_type, description=desc[:300],
+                    ))
+                    return wines
+        except Exception:
+            pass
 
-        # Price
-        price_el = soup.select_one(".sale-price, .price-sale, [class*='sale']")
-        orig_el = soup.select_one(".original-price, .price-orig, [class*='orig']")
+    # Fallback: HTML parsing
+    # Try multiple selector patterns
+    selectors = [
+        ("h1.wineTitle", ".salePrice", ".retailPrice", "img.wineImg"),
+        ("h1[class*='wine']", "[class*='sale'][class*='price']", "[class*='retail'][class*='price']", "img"),
+        ("h1", ".price", ".was", "img"),
+    ]
+
+    for name_sel, price_sel, orig_sel, img_sel in selectors:
+        name_el = soup.select_one(name_sel)
+        if not name_el:
+            continue
+        name = name_el.get_text(strip=True)
+        price_el = soup.select_one(price_sel)
+        orig_el = soup.select_one(orig_sel)
+        img_el = soup.select_one(img_sel)
+
         price = parse_price(price_el.get_text() if price_el else "")
         original = parse_price(orig_el.get_text() if orig_el else "")
+        image = ""
+        if img_el:
+            image = img_el.get("data-src") or img_el.get("src", "")
+            if image.startswith("//"):
+                image = "https:" + image
 
-        # Image
-        img_el = soup.select_one("img.product-image, .wine-image img, .product img")
-        image = img_el.get("src", "") if img_el else ""
-        if image and image.startswith("//"):
-            image = "https:" + image
+        desc_el = soup.select_one(".wineDescription, .description, [class*='desc']")
+        desc = desc_el.get_text(strip=True)[:300] if desc_el else ""
 
-        # Description / varietal hints
-        desc_el = soup.select_one(".product-description, .description, .wine-desc")
-        description = desc_el.get_text(strip=True)[:300] if desc_el else ""
+        varietal, wine_type, country, region = infer_attributes(name + " " + desc)
+        if name:
+            wines.append(wine_stub(
+                name=name, price=price, original_price=original,
+                url=BASE, image=image, source="Last Bottle",
+                varietal=varietal, region=region, country=country,
+                wine_type=wine_type, description=desc,
+            ))
+            break
 
-        # Try to sniff varietal/type from the name
-        varietal, wine_type, country, region = _infer_attributes(name + " " + description)
-
-        if name and name != "Unknown Wine":
-            wines.append(
-                wine_stub(
-                    name=name,
-                    price=price,
-                    original_price=original,
-                    url="https://www.lastbottle.com/",
-                    image=image,
-                    source="Last Bottle",
-                    varietal=varietal,
-                    region=region,
-                    country=country,
-                    wine_type=wine_type,
-                    description=description,
-                )
-            )
-    except Exception as e:
-        logger.warning(f"[Last Bottle] parse error: {e}")
-
+    logger.info(f"[Last Bottle] {len(wines)} wines")
     return wines
-
-
-def _infer_attributes(text: str):
-    text_lower = text.lower()
-    varietal = ""
-    wine_type = ""
-    country = ""
-    region = ""
-
-    varietals = [
-        "cabernet sauvignon", "pinot noir", "chardonnay", "sauvignon blanc",
-        "merlot", "syrah", "shiraz", "zinfandel", "malbec", "tempranillo",
-        "riesling", "grenache", "sangiovese", "nebbiolo", "barbera",
-        "petite sirah", "viognier", "roussanne", "marsanne", "chenin blanc",
-        "gewurztraminer", "pinot gris", "pinot grigio", "moscato", "prosecco",
-        "champagne", "cabernet franc", "petit verdot", "carmenere",
-    ]
-    for v in varietals:
-        if v in text_lower:
-            varietal = v.title()
-            break
-
-    if any(w in text_lower for w in ["red", "rouge", "tinto", "rosso"]):
-        wine_type = "Red"
-    elif any(w in text_lower for w in ["white", "blanc", "bianco", "blanco"]):
-        wine_type = "White"
-    elif "rosé" in text_lower or "rose" in text_lower:
-        wine_type = "Rosé"
-    elif "sparkling" in text_lower or "champagne" in text_lower or "prosecco" in text_lower:
-        wine_type = "Sparkling"
-    elif "dessert" in text_lower or "port" in text_lower or "sauternes" in text_lower:
-        wine_type = "Dessert"
-
-    countries = ["france", "italy", "spain", "usa", "argentina", "chile",
-                 "australia", "new zealand", "germany", "portugal", "austria",
-                 "south africa", "greece", "israel"]
-    for c in countries:
-        if c in text_lower:
-            country = c.title()
-            break
-
-    regions = [
-        "bordeaux", "burgundy", "rhône", "rhone", "loire", "alsace", "champagne",
-        "napa", "sonoma", "willamette", "paso robles", "mendocino",
-        "tuscany", "piedmont", "veneto", "sicily", "rioja", "priorat",
-        "ribera del duero", "mendoza", "marlborough", "barossa", "mosel",
-        "douro", "alentejo",
-    ]
-    for r in regions:
-        if r in text_lower:
-            region = r.title()
-            break
-
-    return varietal, wine_type, country, region

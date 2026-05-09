@@ -1,45 +1,84 @@
 """
-Scraper for Naked Wines (nakedwines.com) — on-sale / deals section.
+Naked Wines US - on-sale wines.
 """
 import logging
-from scrapers import get_page, parse_price, wine_stub
-from scrapers.lastbottle import _infer_attributes
+import json
 from bs4 import BeautifulSoup
-import re
+from scrapers import get_page, parse_price, wine_stub, infer_attributes
 
 logger = logging.getLogger(__name__)
+BASE = "https://us.nakedwines.com"
+SALE_URL = BASE + "/wines/all-wines-on-sale.htm"
 
-DEALS_URL = "https://us.nakedwines.com/wines/all-wines-on-sale.htm"
 
-
-def scrape_nakedwines() -> list[dict]:
+def scrape_nakedwines() -> list:
     wines = []
-    html = get_page(DEALS_URL)
+    html = get_page(SALE_URL, ua_index=0)
     if not html:
         return wines
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
-    # Naked Wines product grid
-    cards = soup.select(".product-grid__item, .product-card, [class*='product-item']")
-    if not cards:
-        cards = soup.select("li[class*='wine'], div[class*='wine-card']")
+    # Try JSON embedded product data first
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        if "window.__INITIAL_STATE__" in text or '"products"' in text:
+            try:
+                # Extract JSON blob
+                import re
+                m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+?\});', text, re.DOTALL)
+                if m:
+                    data = json.loads(m.group(1))
+                    products = (
+                        data.get("products", {}).get("items", []) or
+                        data.get("catalog", {}).get("products", [])
+                    )
+                    for p in products[:30]:
+                        name = p.get("name", "")
+                        price = float(p.get("price", 0) or p.get("salePrice", 0) or 0) or None
+                        orig = float(p.get("rrp", 0) or p.get("regularPrice", 0) or 0) or None
+                        image = p.get("image", "") or p.get("imageUrl", "")
+                        url = p.get("url", "") or SALE_URL
+                        if url and not url.startswith("http"): url = BASE + url
+                        varietal = p.get("grape", "") or p.get("varietal", "")
+                        region = p.get("region", "")
+                        country = p.get("country", "")
+                        wine_type = p.get("wineType", "") or p.get("type", "")
+                        rating = float(p.get("rating", 0) or 0) or None
+                        if name:
+                            wines.append(wine_stub(
+                                name=name, price=price, original_price=orig,
+                                url=url, image=image, source="Naked Wines",
+                                varietal=varietal, region=region, country=country,
+                                wine_type=wine_type, rating=rating,
+                                rating_source="Naked Wines Community",
+                            ))
+                    if wines:
+                        return wines
+            except Exception as e:
+                logger.debug(f"[Naked Wines] JSON parse: {e}")
 
-    logger.info(f"[Naked Wines] found {len(cards)} cards")
+    # HTML fallback
+    cards = (
+        soup.select(".product-grid__item") or
+        soup.select("[class*='product-card']") or
+        soup.select("[class*='wine-card']") or
+        soup.select("li[class*='product']")
+    )
+    logger.info(f"[Naked Wines] {len(cards)} HTML cards")
 
     for card in cards[:30]:
         try:
-            name_el = card.select_one("h2, h3, .product-name, [class*='name']")
+            name_el = card.select_one("h2, h3, [class*='name'], [class*='title']")
             name = name_el.get_text(strip=True) if name_el else ""
             if not name:
                 continue
 
             link_el = card.select_one("a[href]")
-            url = link_el["href"] if link_el else DEALS_URL
-            if url and not url.startswith("http"):
-                url = "https://us.nakedwines.com" + url
+            url = link_el["href"] if link_el else SALE_URL
+            if url and not url.startswith("http"): url = BASE + url
 
-            price_el = card.select_one("[class*='sale-price'], [class*='angel-price'], .price")
+            price_el = card.select_one("[class*='angel'], [class*='sale'], [class*='price']")
             orig_el = card.select_one("[class*='rrp'], [class*='regular'], [class*='was']")
             price = parse_price(price_el.get_text() if price_el else "")
             original = parse_price(orig_el.get_text() if orig_el else "")
@@ -48,39 +87,25 @@ def scrape_nakedwines() -> list[dict]:
             image = ""
             if img_el:
                 image = img_el.get("data-src") or img_el.get("src", "")
-                if image and image.startswith("//"):
-                    image = "https:" + image
+                if image.startswith("//"): image = "https:" + image
 
-            # Naked Wines often includes varietal/region in subheadings
-            sub_el = card.select_one(".product-subtitle, .varietal, [class*='sub']")
-            sub_text = sub_el.get_text(strip=True) if sub_el else ""
-
-            # Rating
+            import re
             rating_el = card.select_one("[class*='rating'], [class*='score']")
-            rating_text = rating_el.get_text(strip=True) if rating_el else ""
-            rating_match = re.search(r"(\d+(?:\.\d+)?)", rating_text)
-            rating = float(rating_match.group(1)) if rating_match else None
+            rating = None
+            if rating_el:
+                m = re.search(r"(\d+(?:\.\d+)?)", rating_el.get_text())
+                if m: rating = float(m.group(1))
 
-            varietal, wine_type, country, region = _infer_attributes(name + " " + sub_text)
-
-            wines.append(
-                wine_stub(
-                    name=name,
-                    price=price,
-                    original_price=original,
-                    url=url,
-                    image=image,
-                    source="Naked Wines",
-                    varietal=varietal,
-                    region=region,
-                    country=country,
-                    wine_type=wine_type,
-                    rating=rating,
-                    rating_source="Naked Wines Community",
-                    description=sub_text,
-                )
-            )
+            varietal, wine_type, country, region = infer_attributes(name)
+            wines.append(wine_stub(
+                name=name, price=price, original_price=original,
+                url=url, image=image, source="Naked Wines",
+                varietal=varietal, region=region, country=country,
+                wine_type=wine_type, rating=rating,
+                rating_source="Naked Wines Community",
+            ))
         except Exception as e:
-            logger.debug(f"[Naked Wines] card error: {e}")
+            logger.debug(f"[Naked Wines] {e}")
 
+    logger.info(f"[Naked Wines] {len(wines)} wines")
     return wines
