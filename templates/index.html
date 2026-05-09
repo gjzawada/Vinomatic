@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Vinomatic — Wine Deal Finder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">🍷</span>
+        <div>
+          <span class="logo-name">Vinomatic</span>
+          <span class="logo-tagline">wine deal intelligence</span>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span id="deal-count" class="deal-count">—</span>
+        <button class="refresh-btn" id="refreshBtn" onclick="fetchWines()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- Sidebar Filters -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Sources</h3>
+        <div class="source-list" id="sourceList">
+          {% for source in sources %}
+          <label class="source-toggle">
+            <input type="checkbox" value="{{ source }}" checked class="source-check">
+            <span class="toggle-dot"></span>
+            {{ source }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Wine Type</h3>
+        <div class="pill-group" id="typeFilter">
+          <button class="pill active" data-value="">All</button>
+          <button class="pill" data-value="Red">Red</button>
+          <button class="pill" data-value="White">White</button>
+          <button class="pill" data-value="Rosé">Rosé</button>
+          <button class="pill" data-value="Sparkling">Sparkling</button>
+          <button class="pill" data-value="Dessert">Dessert</button>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Price Range</h3>
+        <div class="range-inputs">
+          <div class="range-field">
+            <label>Min $</label>
+            <input type="number" id="minPrice" placeholder="0" min="0" step="1">
+          </div>
+          <span class="range-sep">–</span>
+          <div class="range-field">
+            <label>Max $</label>
+            <input type="number" id="maxPrice" placeholder="500" min="0" step="1">
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Min Discount</h3>
+        <div class="slider-wrap">
+          <input type="range" id="discountSlider" min="0" max="80" value="0" step="5">
+          <div class="slider-labels">
+            <span>0%</span>
+            <span id="discountVal" class="slider-current">0%+</span>
+            <span>80%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Varietal</h3>
+        <input type="text" id="varietalInput" class="text-filter" placeholder="e.g. Pinot Noir">
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Region</h3>
+        <input type="text" id="regionInput" class="text-filter" placeholder="e.g. Burgundy">
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Country</h3>
+        <input type="text" id="countryInput" class="text-filter" placeholder="e.g. France">
+      </div>
+
+      <div class="sidebar-section">
+        <h3 class="sidebar-title">Sort By</h3>
+        <select id="sortBy" class="sort-select">
+          <option value="discount">Best Discount</option>
+          <option value="price_asc">Price: Low → High</option>
+          <option value="price_desc">Price: High → Low</option>
+          <option value="rating">Highest Rated</option>
+        </select>
+      </div>
+
+      <button class="apply-btn" onclick="fetchWines()">Apply Filters</button>
+      <button class="clear-btn" onclick="clearFilters()">Clear All</button>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-content">
+      <div id="loadingState" class="loading-state hidden">
+        <div class="spinner"></div>
+        <p>Sniffing out deals across the web…</p>
+      </div>
+
+      <div id="emptyState" class="empty-state hidden">
+        <span class="empty-icon">🍾</span>
+        <p>No wines matched your filters.</p>
+        <small>Try loosening your search criteria.</small>
+      </div>
+
+      <div id="errorState" class="error-state hidden">
+        <span class="empty-icon">⚠️</span>
+        <p>Couldn't reach the scrapers.</p>
+        <small>Make sure the Flask server is running on port 5050.</small>
+      </div>
+
+      <div id="wineGrid" class="wine-grid"></div>
+    </main>
+  </div>
+
+  <!-- Wine card template -->
+  <template id="wineCardTpl">
+    <article class="wine-card">
+      <a class="card-link" href="#" target="_blank" rel="noopener">
+        <div class="card-image-wrap">
+          <img class="card-image" src="" alt="" loading="lazy">
+          <div class="card-badge discount-badge"></div>
+        </div>
+        <div class="card-body">
+          <div class="card-source"></div>
+          <h2 class="card-name"></h2>
+          <div class="card-meta">
+            <span class="card-varietal"></span>
+            <span class="card-region"></span>
+          </div>
+          <div class="card-footer">
+            <div class="card-prices">
+              <span class="card-price"></span>
+              <span class="card-original"></span>
+            </div>
+            <div class="card-rating hidden">
+              <span class="rating-star">★</span>
+              <span class="rating-val"></span>
+            </div>
+          </div>
+        </div>
+      </a>
+    </article>
+  </template>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
